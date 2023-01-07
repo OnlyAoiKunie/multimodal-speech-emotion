@@ -113,7 +113,7 @@ class SingleEncoderModelMultiAttn:
                                                         )
         self.model_audio._create_placeholders()
         self.model_audio._create_gru_model()
-        self.model_audio._add_prosody()
+        #self.model_audio._add_prosody()
         #self.model_audio._create_output_layers_for_multi()
         
 
@@ -141,6 +141,7 @@ class SingleEncoderModelMultiAttn:
     def _create_attention_module(self):
         print '[launch-multi] create attention module'
         # project audio dimension_size to text dimension_size
+        '''
         self.attnM = tf.Variable(tf.random_uniform([self.model_audio.final_encoder_dimension, self.model_text.final_encoder_dimension],
                                                    minval= -0.25,
                                                    maxval= 0.25,
@@ -155,15 +156,32 @@ class SingleEncoderModelMultiAttn:
         
 
         self.attn_audio_final_encoder = tf.matmul(self.model_audio.final_encoder, self.attnM) + self.attnb
+        '''
+
         
-        self.final_encoder, self.tmp_norm = luong_attention (
+
+        self.final_encoder_audio, self.tmp_norm = luong_attention (
                                                 batch_size = self.batch_size,
-                                                target = self.model_text.outputs_en,
-                                                condition = self.attn_audio_final_encoder,
+                                                target = self.model_audio.outputs_en, #128*750*400
+                                                condition = self.model_text.final_encoder, #750*400
+                                                batch_seq = self.encoder_seq_audio,
+                                                max_len = self.model_audio.encoder_size,
+                                                hidden_dim = self.model_audio.final_encoder_dimension
+                                            )
+        
+        self.final_encoder_text, self.tmp_norm = luong_attention (
+                                                batch_size = self.batch_size,
+                                                target = self.model_text.outputs_en, #128*750*400
+                                                condition = self.model_audio.final_encoder, #750*400
                                                 batch_seq = self.encoder_seq_text,
                                                 max_len = self.model_text.encoder_size,
                                                 hidden_dim = self.model_text.final_encoder_dimension
                                             )
+                        
+        
+        self.final_encoder = tf.concat([self.final_encoder_audio , self.final_encoder_text] , axis = 1)
+                     
+            
 
         
     def _create_output_layers(self):
@@ -171,9 +189,9 @@ class SingleEncoderModelMultiAttn:
         
         with tf.name_scope('multi_output_layer') as scope:
 
-            self.final_encoder = tf.concat( [self.final_encoder, self.attn_audio_final_encoder], axis=1 )
+            self.final_encoder = tf.concat( [self.final_encoder_audio, self.final_encoder_text], axis=1 )
             
-            self.M = tf.Variable(tf.random_uniform([(self.model_text.final_encoder_dimension)+(self.model_text.final_encoder_dimension), N_CATEGORY],
+            self.M = tf.Variable(tf.random_uniform([(self.model_text.final_encoder_dimension *2)+(self.model_text.final_encoder_dimension*2), N_CATEGORY],
                                                    minval= -0.25,
                                                    maxval= 0.25,
                                                    dtype=tf.float32,
@@ -198,10 +216,16 @@ class SingleEncoderModelMultiAttn:
         print '[launch-multi] create optimizer'
         
         with tf.name_scope('multi_optimizer') as scope:
+
             opt_func = tf.train.AdamOptimizer(learning_rate=self.lr)
             gvs = opt_func.compute_gradients(self.loss)
-            capped_gvs = [(tf.clip_by_value(t=grad, clip_value_min=-10, clip_value_max=10), var) for grad, var in gvs]
+            def ClipIfNotNone(grad):
+                if grad is not None:
+                    return tf.clip_by_value(grad,-10,10)
+            capped_gvs = [(ClipIfNotNone(grad), var) for grad, var in gvs]
             self.optimizer = opt_func.apply_gradients(grads_and_vars=capped_gvs, global_step=self.global_step)
+
+            
     
     
     def _create_summary(self):

@@ -21,11 +21,11 @@ output :
 def luong_attention( batch_size, target, condition, batch_seq, max_len, hidden_dim ) :
 
     # same dim [batch, max_seq, embed]
-    batch_seq_embed_target = tf.reshape( target, [batch_size, max_len, hidden_dim] )
+    batch_seq_embed_target = tf.reshape( target, [batch_size, max_len, hidden_dim * 2] )
     
 
     batch_embed_given = condition
-    batch_seq_embed_given = tf.reshape( batch_embed_given, [batch_size,  hidden_dim, 1] )
+    batch_seq_embed_given = tf.reshape( batch_embed_given, [batch_size,  hidden_dim * 2, 1] )
 
     # calculate similarity 
     dot = tf.matmul( batch_seq_embed_target,  batch_seq_embed_given )

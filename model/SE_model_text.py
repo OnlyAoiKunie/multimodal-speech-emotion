@@ -88,7 +88,7 @@ class SingleEncoderModelText:
             
     # cell instance
     def gru_cell(self):
-        return tf.contrib.rnn.GRUCell(num_units=self.hidden_dim)
+        return tf.contrib.rnn.LSTMCell(self.hidden_dim)
     
     
     # cell instance with drop-out wrapper applied
@@ -109,18 +109,34 @@ class SingleEncoderModelText:
         
             with tf.variable_scope("text_GRU", reuse=False, initializer=tf.orthogonal_initializer()):
                 
-                cells_en = tf.contrib.rnn.MultiRNNCell( [ self.gru_drop_out_cell() for _ in range(self.num_layers) ] )
+                cell_fw = tf.contrib.rnn.MultiRNNCell( [ self.gru_drop_out_cell() for _ in range(self.num_layers) ] )
+                cell_bw = tf.contrib.rnn.MultiRNNCell( [ self.gru_drop_out_cell() for _ in range(self.num_layers) ] )
 
-                (self.outputs_en, last_states_en) = tf.nn.dynamic_rnn(
-                                                    cell=cells_en,
+
+                (self.outputs_en, (last_state_fw , last_state_bw)) = tf.nn.bidirectional_dynamic_rnn(
+                                                    cell_fw,
+                                                    cell_bw,
                                                     inputs= self.embed_en,
                                                     dtype=tf.float32,
                                                     sequence_length=self.encoder_seq,
                                                     time_major=False)
+                self.outputs_en = tf.concat(self.outputs_en , axis = 2)
+                #self.final_encoder = self.outputs_en[:,-1,:]
                 
-                self.final_encoder = last_states_en[-1]
+
                 
+                self.w = tf.Variable(tf.random_normal([self.outputs_en.shape[2].value , 1], stddev=0.1))
+                self.b = tf.Variable(tf.random_normal([1], stddev=0.1))
+                self.u = tf.Variable(tf.random_normal([1], stddev=0.1))
+                self.v = tf.sigmoid(tf.tensordot(self.outputs_en, self.w, axes=1) + self.b)
+                self.vu = tf.tensordot(self.v, self.u, axes=1)
+                self.att = tf.nn.softmax(self.vu)
+                self.final_encoder = tf.reduce_sum(self.outputs_en * tf.expand_dims(self.att, -1), 1) 
+                
+
         self.final_encoder_dimension   = self.hidden_dim
+
+        
         
         
     def _create_output_layers(self):
@@ -128,7 +144,7 @@ class SingleEncoderModelText:
         
         with tf.name_scope('text_output_layer') as scope:
 
-            self.M = tf.Variable(tf.random_uniform([self.final_encoder_dimension, N_CATEGORY],
+            self.M = tf.Variable(tf.random_uniform([self.final_encoder_dimension*2, N_CATEGORY],
                                                    minval= -0.25,
                                                    maxval= 0.25,
                                                    dtype=tf.float32,
@@ -154,7 +170,7 @@ class SingleEncoderModelText:
         
         with tf.name_scope('text_output_layer') as scope:
 
-            self.M = tf.Variable(tf.random_uniform([self.final_encoder_dimension, (self.final_encoder_dimension/2)],
+            self.M = tf.Variable(tf.random_uniform([self.final_encoder_dimension * 2, (self.final_encoder_dimension/2)],
                                                    minval= -0.25,
                                                    maxval= 0.25,
                                                    dtype=tf.float32,

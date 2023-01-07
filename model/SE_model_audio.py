@@ -56,7 +56,7 @@ class SingleEncoderModelAudio:
 
     # cell instance
     def gru_cell(self):
-        return tf.contrib.rnn.GRUCell(num_units=self.hidden_dim)
+        return tf.contrib.rnn.LSTMCell(self.hidden_dim)
     
     
     # cell instance with drop-out wrapper applied
@@ -77,18 +77,34 @@ class SingleEncoderModelAudio:
         
             with tf.variable_scope("audio_GRU", reuse=False, initializer=tf.orthogonal_initializer()):
                 
-                cells_en = tf.contrib.rnn.MultiRNNCell( [ self.gru_drop_out_cell() for _ in range(self.num_layers) ] )
+                cell_fw = tf.contrib.rnn.MultiRNNCell( [ self.gru_drop_out_cell() for _ in range(self.num_layers) ] )
+                cell_bw = tf.contrib.rnn.MultiRNNCell( [ self.gru_drop_out_cell() for _ in range(self.num_layers) ] )
 
-                (self.outputs_en, last_states_en) = tf.nn.dynamic_rnn(
-                                                    cell=cells_en,
+
+                (self.outputs_en, (last_state_fw , last_state_bw)) = tf.nn.bidirectional_dynamic_rnn(
+                                                    cell_fw,
+                                                    cell_bw,
                                                     inputs= self.encoder_inputs,
                                                     dtype=tf.float32,
                                                     sequence_length=self.encoder_seq,
                                                     time_major=False)
+
+                self.outputs_en = tf.concat(self.outputs_en,2) #128*750*400   
+                #self.final_encoder = self.outputs_en[:,-1,:]
                 
-                self.final_encoder = last_states_en[-1]
+                #Attention layer
+                self.w = tf.Variable(tf.random_normal([self.outputs_en.shape[2].value , 1], stddev=0.1)) #[400,1]
+                self.b = tf.Variable(tf.random_normal([1], stddev=0.1)) #[1]
+                self.u = tf.Variable(tf.random_normal([1], stddev=0.1)) #[1]
+                self.v = tf.sigmoid(tf.tensordot(self.outputs_en, self.w, axes=1) + self.b) #[128,750,400] * [400,1] = [128,750,1]
+                self.vu = tf.tensordot(self.v, self.u, axes=1) #[128,750]
+                self.att = tf.nn.softmax(self.vu) #weighted
+                self.final_encoder = tf.reduce_sum(self.outputs_en * tf.expand_dims(self.att, -1), 1) #[128,750,400] * [128,750,1] 
+                                          
+                 
                 
-        self.final_encoder_dimension   = self.hidden_dim
+                
+        self.final_encoder_dimension   = self.hidden_dim #200
         
         
     def _add_prosody(self):
@@ -101,8 +117,8 @@ class SingleEncoderModelAudio:
         print '[launch-audio] create output projection layer'        
         
         with tf.name_scope('audio_output_layer') as scope:
-
-            self.M = tf.Variable(tf.random_uniform([self.final_encoder_dimension, N_CATEGORY],
+            print(self.final_encoder_dimension)
+            self.M = tf.Variable(tf.random_uniform([self.final_encoder_dimension * 2 , N_CATEGORY],
                                                    minval= -0.25,
                                                    maxval= 0.25,
                                                    dtype=tf.float32,
@@ -116,7 +132,6 @@ class SingleEncoderModelAudio:
             
             # e * M + b
             self.batch_pred = tf.matmul(self.final_encoder, self.M) + self.b
-        
         with tf.name_scope('loss') as scope:
             
             self.batch_loss = tf.nn.sigmoid_cross_entropy_with_logits(logits=self.batch_pred, labels=self.y_labels )
@@ -128,7 +143,7 @@ class SingleEncoderModelAudio:
         
         with tf.name_scope('audio_output_layer') as scope:
 
-            self.M = tf.Variable(tf.random_uniform([self.final_encoder_dimension, (self.final_encoder_dimension/2)],
+            self.M = tf.Variable(tf.random_uniform([self.final_encoder_dimension * 2, (self.final_encoder_dimension/2)],
                                                    minval= -0.25,
                                                    maxval= 0.25,
                                                    dtype=tf.float32,
@@ -150,7 +165,10 @@ class SingleEncoderModelAudio:
         with tf.name_scope('audio_optimizer') as scope:
             opt_func = tf.train.AdamOptimizer(learning_rate=self.lr)
             gvs = opt_func.compute_gradients(self.loss)
-            capped_gvs = [(tf.clip_by_value(t=grad, clip_value_min=-10, clip_value_max=10), var) for grad, var in gvs]
+            def ClipIfNotNone(grad):
+                if grad is not None:
+                    return tf.clip_by_value(grad,-10,10)
+            capped_gvs = [(ClipIfNotNone(grad), var) for grad, var in gvs]
             self.optimizer = opt_func.apply_gradients(grads_and_vars=capped_gvs, global_step=self.global_step)
     
     
@@ -165,7 +183,7 @@ class SingleEncoderModelAudio:
     def build_graph(self):
         self._create_placeholders()
         self._create_gru_model()
-        self._add_prosody()
+        #self._add_prosody()
         self._create_output_layers()
         self._create_optimizer()
         self._create_summary()
